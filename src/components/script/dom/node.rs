@@ -139,18 +139,28 @@ impl<View> TreeNodeRef<Node<View>> for AbstractNode<View> {
     }
 
     fn set_parent_node(node: &mut Node<View>, new_parent_node: Option<AbstractNode<View>>) {
+        let doc = node.owner_doc();
+        assert!(doc.document().is_safe_to_modify_dom());
         node.parent_node = new_parent_node
     }
     fn set_first_child(node: &mut Node<View>, new_first_child: Option<AbstractNode<View>>) {
+        let doc = node.owner_doc();
+        assert!(doc.document().is_safe_to_modify_dom());
         node.first_child = new_first_child
     }
     fn set_last_child(node: &mut Node<View>, new_last_child: Option<AbstractNode<View>>) {
+        let doc = node.owner_doc();
+        assert!(doc.document().is_safe_to_modify_dom());
         node.last_child = new_last_child
     }
     fn set_prev_sibling(node: &mut Node<View>, new_prev_sibling: Option<AbstractNode<View>>) {
+        let doc = node.owner_doc();
+        assert!(doc.document().is_safe_to_modify_dom());
         node.prev_sibling = new_prev_sibling
     }
     fn set_next_sibling(node: &mut Node<View>, new_next_sibling: Option<AbstractNode<View>>) {
+        let doc = node.owner_doc();
+        assert!(doc.document().is_safe_to_modify_dom());
         node.next_sibling = new_next_sibling
     }
 

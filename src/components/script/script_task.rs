@@ -239,10 +239,14 @@ impl Page {
         };
     }
 
+    pub fn is_layout_running(&self) -> bool {
+        self.layout_join_port.is_some()
+    }
+
     /// Sends a ping to layout and waits for the response. The response will arrive when the
     /// layout task has finished any pending request messages.
     pub fn join_layout(&mut self) {
-        if self.layout_join_port.is_some() {
+        if self.is_layout_running() {
             let join_port = replace(&mut self.layout_join_port, None);
             match join_port {
                 Some(ref join_port) => {
@@ -489,7 +493,7 @@ impl ScriptTask {
         let mut resizes = ~[];
         for page in self.page_tree.iter() {
             // Only process a resize if layout is idle.
-            if page.layout_join_port.is_none() {
+            if !page.is_layout_running() {
                 match page.resize_event.take() {
                     Some(size) => resizes.push((page.id, size)),
                     None => ()

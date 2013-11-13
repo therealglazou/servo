@@ -334,6 +334,10 @@ impl Document {
         self.window.wait_until_safe_to_modify_dom();
     }
 
+    pub fn is_safe_to_modify_dom(&self) -> bool {
+        self.window.is_safe_to_modify_dom()
+    }
+
     pub fn register_nodes_with_id(&mut self, root: &AbstractNode<ScriptView>) {
         foreach_ided_elements(root, |id: &~str, abstract_node: &AbstractNode<ScriptView>| {
             // TODO: "in tree order, within the context object's tree"
