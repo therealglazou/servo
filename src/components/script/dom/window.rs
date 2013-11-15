@@ -183,6 +183,10 @@ impl Window {
         self.page.reflow_all(ReflowForDisplay, self.script_chan.clone(), self.compositor);
     }
 
+    pub fn is_safe_to_modify_dom(&self) -> bool {
+        !self.page.is_layout_running()
+    }
+
     pub fn wait_until_safe_to_modify_dom(&self) {
         // FIXME: This disables concurrent layout while we are modifying the DOM, since
         //        our current architecture is entirely unsafe in the presence of races.
