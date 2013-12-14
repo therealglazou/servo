@@ -20,17 +20,27 @@ use servo_net::image_cache_task::ImageCacheTask;
 use servo_net::resource_task::ResourceTask;
 use servo_util::time::ProfilerChan;
 use std::task;
+use std::comm;
 
 /// A uniquely-identifiable pipeline of script task, layout task, and render task. 
-#[deriving(Clone)]
 pub struct Pipeline {
     id: PipelineId,
     subpage_id: Option<SubpageId>,
     script_chan: ScriptChan,
     layout_chan: LayoutChan,
     render_chan: RenderChan<AbstractNode<()>>,
+    layout_shutdown_port: Port<()>,
+    render_shutdown_port: Port<()>,
     /// The most recently loaded url
     url: Option<Url>,
+}
+
+/// A subset of the Pipeline nthat is eeded for layer composition
+#[deriving(Clone)]
+pub struct CompositionPipeline {
+    id: PipelineId,
+    script_chan: ScriptChan,
+    render_chan: RenderChan<AbstractNode<()>>,
 }
 
 impl Pipeline {
@@ -47,13 +57,16 @@ impl Pipeline {
                        -> Pipeline {
         let (layout_port, layout_chan) = special_stream!(LayoutChan);
         let (render_port, render_chan) = special_stream!(RenderChan);
+        let (render_shutdown_port, render_shutdown_chan) = comm::stream();
+        let (layout_shutdown_port, layout_shutdown_chan) = comm::stream();
 
         RenderTask::create(id,
                            render_port,
                            compositor_chan.clone(),
                            constellation_chan.clone(),
                            opts.clone(),
-                           profiler_chan.clone());
+                           profiler_chan.clone(),
+                           render_shutdown_chan);
 
         LayoutTask::create(id,
                            layout_port,
@@ -62,7 +75,8 @@ impl Pipeline {
                            render_chan.clone(),
                            image_cache_task.clone(),
                            opts.clone(),
-                           profiler_chan);
+                           profiler_chan,
+                           layout_shutdown_chan);
 
         let new_layout_info = NewLayoutInfo {
             old_id: script_pipeline.id.clone(),
@@ -76,7 +90,9 @@ impl Pipeline {
                       subpage_id,
                       script_pipeline.script_chan.clone(),
                       layout_chan,
-                      render_chan)
+                      render_chan,
+                      layout_shutdown_port,
+                      render_shutdown_port)
     }
 
     pub fn create(id: PipelineId,
@@ -92,11 +108,15 @@ impl Pipeline {
         let (script_port, script_chan) = special_stream!(ScriptChan);
         let (layout_port, layout_chan) = special_stream!(LayoutChan);
         let (render_port, render_chan) = special_stream!(RenderChan);
+        let (render_shutdown_port, render_shutdown_chan) = comm::stream();
+        let (layout_shutdown_port, layout_shutdown_chan) = comm::stream();
         let pipeline = Pipeline::new(id,
                                      subpage_id,
                                      script_chan.clone(),
                                      layout_chan.clone(),
-                                     render_chan.clone());
+                                     render_chan.clone(),
+                                     layout_shutdown_port,
+                                     render_shutdown_port);
 
         // Wrap task creation within a supervised task so that failure will
         // only tear down those tasks instead of ours.
@@ -113,7 +133,9 @@ impl Pipeline {
                     layout_port,
                     constellation_chan,
                     image_cache_task,
-                    profiler_chan
+                    profiler_chan,
+                    layout_shutdown_chan,
+                    render_shutdown_chan
                 ], {
             ScriptTask::create(id,
                                compositor_chan.clone(),
@@ -130,7 +152,8 @@ impl Pipeline {
                                compositor_chan.clone(),
                                constellation_chan.clone(),
                                opts.clone(),
-                               profiler_chan.clone());
+                               profiler_chan.clone(),
+                               render_shutdown_chan);
 
             LayoutTask::create(id,
                                layout_port,
@@ -139,7 +162,8 @@ impl Pipeline {
                                render_chan.clone(),
                                image_cache_task,
                                opts.clone(),
-                               profiler_chan);
+                               profiler_chan,
+                               layout_shutdown_chan);
         });
 
         spawn_with!(task::task(), [failure_chan], {
@@ -161,7 +185,9 @@ impl Pipeline {
                subpage_id: Option<SubpageId>,
                script_chan: ScriptChan,
                layout_chan: LayoutChan,
-               render_chan: RenderChan<AbstractNode<()>>)
+               render_chan: RenderChan<AbstractNode<()>>,
+               layout_shutdown_port: Port<()>,
+               render_shutdown_port: Port<()>)
                -> Pipeline {
         Pipeline {
             id: id,
@@ -169,6 +195,8 @@ impl Pipeline {
             script_chan: script_chan,
             layout_chan: layout_chan,
             render_chan: render_chan,
+            layout_shutdown_port: layout_shutdown_port,
+            render_shutdown_port: render_shutdown_port,
             url: None,
         }
     }
@@ -195,6 +223,19 @@ impl Pipeline {
     pub fn exit(&self) {
         // Script task handles shutting down layout, and layout handles shutting down the renderer.
         self.script_chan.try_send(script_task::ExitPipelineMsg(self.id));
+
+        // Wait until all slave tasks have terminated and run destructors
+        // NOTE: We don't wait for script task as we don't always own it
+        self.render_shutdown_port.try_recv();
+        self.layout_shutdown_port.try_recv();
+    }
+
+    pub fn to_sendable(&self) -> CompositionPipeline {
+        CompositionPipeline {
+            id: self.id.clone(),
+            script_chan: self.script_chan.clone(),
+            render_chan: self.render_chan.clone(),
+        }
     }
 }
 
