@@ -51,8 +51,10 @@ pub fn run_compositor(compositor: &CompositorTask, app: &Application) {
     let mut window_size = Size2D(window_size.width as uint, window_size.height as uint);
     let mut done = false;
     let mut recomposite = false;
-    let mut composite_ready = false;
     let graphics_context = CompositorTask::create_graphics_context();
+
+    // Tracks whether the renderer is idle and it's now safe to perform a composite
+    let mut composite_ready = false;
 
     // Keeps track of the current zoom factor
     let mut world_zoom = 1f32;
@@ -87,10 +89,7 @@ pub fn run_compositor(compositor: &CompositorTask, app: &Application) {
                 ChangeReadyState(ready_state) => window.set_ready_state(ready_state),
                 ChangeRenderState(render_state) => {
                     window.set_render_state(render_state);
-                    composite_ready = match render_state {
-                        IdleRenderState => true,
-                        _ => false,
-                    }
+                    composite_ready = render_state == IdleRenderState;
                 }
 
                 SetUnRenderedColor(_id, color) => {
@@ -413,6 +412,7 @@ pub fn run_compositor(compositor: &CompositorTask, app: &Application) {
         // Check for messages coming from the windowing system.
         check_for_window_messages(window.recv());
 
+        // If asked to recomposite and renderer is in a safe/idle state
         if recomposite && composite_ready {
             recomposite = false;
             composite();
