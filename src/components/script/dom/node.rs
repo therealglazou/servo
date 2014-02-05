@@ -18,6 +18,7 @@ use dom::htmliframeelement::HTMLIFrameElement;
 use dom::htmlimageelement::HTMLImageElement;
 use dom::nodelist::{NodeList};
 use dom::text::Text;
+use dom::processinginstruction::ProcessingInstruction;
 use layout_interface::{LayoutChan, ReapLayoutDataMsg, UntrustedNodeAddress};
 
 use js::jsapi::{JSContext, JSObject, JSRuntime};
@@ -199,6 +200,7 @@ pub enum NodeTypeId {
     DocumentNodeTypeId(DocumentTypeId),
     ElementNodeTypeId(ElementTypeId),
     TextNodeTypeId,
+    ProcessingInstructionNodeTypeId,
 }
 
 impl Clone for AbstractNode {
@@ -368,8 +370,7 @@ impl<'a> AbstractNode {
 
     // FIXME: This should be doing dynamic borrow checking for safety.
     pub fn is_characterdata(self) -> bool {
-        // FIXME: ProcessingInstruction
-        self.is_text() || self.is_comment()
+        self.is_text() || self.is_comment() || self.is_processing_instruction()
     }
 
     pub fn with_imm_characterdata<R>(self, f: |&CharacterData| -> R) -> R {
@@ -436,6 +437,18 @@ impl<'a> AbstractNode {
             fail!(~"node is not text");
         }
         self.transmute_mut(f)
+    }
+
+    #[inline]
+    pub fn is_processing_instruction(self) -> bool {
+        self.type_id() == ProcessingInstructionNodeTypeId
+    }
+
+    pub fn with_imm_processing_instruction<R>(self, f: |&ProcessingInstruction| -> R)  -> R {
+        if !self.is_processing_instruction() {
+            fail!("node is not processing instruction");
+        }
+        self.transmute(f)
     }
 
     // FIXME: This should be doing dynamic borrow checking for safety.
@@ -924,12 +937,13 @@ impl Node {
     // http://dom.spec.whatwg.org/#dom-node-nodetype
     pub fn NodeType(&self) -> u16 {
         match self.type_id {
-            ElementNodeTypeId(_) => 1,
-            TextNodeTypeId       => 3,
-            CommentNodeTypeId    => 8,
-            DocumentNodeTypeId(_)=> 9,
-            DoctypeNodeTypeId    => 10,
-            DocumentFragmentNodeTypeId => 11,
+            ElementNodeTypeId(_)            => 1,
+            TextNodeTypeId                  => 3,
+            ProcessingInstructionNodeTypeId => 7,
+            CommentNodeTypeId               => 8,
+            DocumentNodeTypeId(_)           => 9,
+            DoctypeNodeTypeId               => 10,
+            DocumentFragmentNodeTypeId      => 11,
         }
     }
 
@@ -940,8 +954,13 @@ impl Node {
                     element.TagName()
                 })
             }
-            CommentNodeTypeId => ~"#comment",
             TextNodeTypeId => ~"#text",
+            ProcessingInstructionNodeTypeId => {
+                abstract_self.with_imm_processing_instruction(|processing_instruction| {
+                    processing_instruction.Target()
+                })
+            }
+            CommentNodeTypeId => ~"#comment",
             DoctypeNodeTypeId => {
                 abstract_self.with_imm_doctype(|doctype| {
                     doctype.name.clone()
@@ -961,6 +980,7 @@ impl Node {
             ElementNodeTypeId(..) |
             CommentNodeTypeId |
             TextNodeTypeId |
+            ProcessingInstructionNodeTypeId |
             DoctypeNodeTypeId |
             DocumentFragmentNodeTypeId => Some(self.owner_doc()),
             DocumentNodeTypeId(_) => None
@@ -997,8 +1017,9 @@ impl Node {
 
     pub fn GetNodeValue(&self, abstract_self: AbstractNode) -> Option<DOMString> {
         match self.type_id {
-            // ProcessingInstruction
-            CommentNodeTypeId | TextNodeTypeId => {
+            CommentNodeTypeId |
+            TextNodeTypeId |
+            ProcessingInstructionNodeTypeId => {
                 abstract_self.with_imm_characterdata(|characterdata| {
                     Some(characterdata.Data())
                 })
@@ -1016,25 +1037,29 @@ impl Node {
 
     pub fn GetTextContent(&self, abstract_self: AbstractNode) -> Option<DOMString> {
         match self.type_id {
-          DocumentFragmentNodeTypeId | ElementNodeTypeId(..) => {
-            let mut content = ~"";
-            for node in abstract_self.traverse_preorder() {
-                if node.is_text() {
-                    node.with_imm_text(|text| {
-                        content = content + text.element.Data();
-                    })
+            DocumentFragmentNodeTypeId |
+            ElementNodeTypeId(..) => {
+                let mut content = ~"";
+                for node in abstract_self.traverse_preorder() {
+                    if node.is_text() {
+                        node.with_imm_text(|text| {
+                            content = content + text.element.Data();
+                        })
+                    }
                 }
+                Some(content)
             }
-            Some(content)
-          }
-          CommentNodeTypeId | TextNodeTypeId => {
-            abstract_self.with_imm_characterdata(|characterdata| {
-                Some(characterdata.Data())
-            })
-          }
-          DoctypeNodeTypeId | DocumentNodeTypeId(_) => {
-            None
-          }
+            CommentNodeTypeId |
+            TextNodeTypeId |
+            ProcessingInstructionNodeTypeId => {
+                abstract_self.with_imm_characterdata(|characterdata| {
+                    Some(characterdata.Data())
+                })
+            }
+            DoctypeNodeTypeId |
+            DocumentNodeTypeId(_) => {
+                None
+            }
         }
     }
 
@@ -1107,7 +1132,7 @@ impl Node {
             }
             DocumentFragmentNodeTypeId |
             ElementNodeTypeId(_) |
-            // ProcessingInstructionNodeTypeId |
+            ProcessingInstructionNodeTypeId |
             CommentNodeTypeId => (),
             DocumentNodeTypeId(..) => return Err(HierarchyRequest)
         }
@@ -1181,7 +1206,7 @@ impl Node {
                         }
                     },
                     TextNodeTypeId |
-                    // ProcessingInstructionNodeTypeId |
+                    ProcessingInstructionNodeTypeId |
                     CommentNodeTypeId => (),
                     DocumentNodeTypeId(_) => unreachable!(),
                 }
@@ -1325,29 +1350,33 @@ impl Node {
                           -> ErrorResult {
         let value = null_str_as_empty(&value);
         match self.type_id {
-          DocumentFragmentNodeTypeId | ElementNodeTypeId(..) => {
-            // Step 1-2.
-            let node = if value.len() == 0 {
-                None
-            } else {
-                let document = self.owner_doc();
-                Some(document.document().CreateTextNode(document, value))
-            };
-            // Step 3.
-            Node::replace_all(node, abstract_self);
-          }
-          CommentNodeTypeId | TextNodeTypeId => {
-            self.wait_until_safe_to_modify_dom();
+            DocumentFragmentNodeTypeId |
+            ElementNodeTypeId(..) => {
+                // Step 1-2.
+                let node = if value.len() == 0 {
+                    None
+                } else {
+                    let document = self.owner_doc();
+                    Some(document.document().CreateTextNode(document, value))
+                };
+                // Step 3.
+                Node::replace_all(node, abstract_self);
+            }
+            CommentNodeTypeId |
+            TextNodeTypeId |
+            ProcessingInstructionNodeTypeId => {
+                self.wait_until_safe_to_modify_dom();
 
-            abstract_self.with_mut_characterdata(|characterdata| {
-                characterdata.data = value.clone();
+                abstract_self.with_mut_characterdata(|characterdata| {
+                    characterdata.data = value.clone();
 
-                // Notify the document that the content of this node is different
-                let document = self.owner_doc();
-                document.document().content_changed();
-            })
-          }
-          DoctypeNodeTypeId | DocumentNodeTypeId(_) => {}
+                    // Notify the document that the content of this node is different
+                    let document = self.owner_doc();
+                    document.document().content_changed();
+                })
+            }
+            DoctypeNodeTypeId |
+            DocumentNodeTypeId(_) => {}
         }
         Ok(())
     }
@@ -1396,7 +1425,7 @@ impl Node {
             DoctypeNodeTypeId |
             ElementNodeTypeId(..) |
             TextNodeTypeId |
-            // ProcessingInstructionNodeTypeId |
+            ProcessingInstructionNodeTypeId |
             CommentNodeTypeId => (),
             DocumentNodeTypeId(..) => return Err(HierarchyRequest)
         }
@@ -1449,7 +1478,7 @@ impl Node {
                         }
                     },
                     TextNodeTypeId |
-                    // ProcessingInstructionNodeTypeId |
+                    ProcessingInstructionNodeTypeId |
                     CommentNodeTypeId => (),
                     DocumentNodeTypeId(..) => unreachable!()
                 }
